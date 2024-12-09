@@ -24,6 +24,8 @@ def plot(grid: Grid, fval: list, **kwargs) -> None:
     dpi: int  = kwargs.get("dpi", 250)
     plot_grid: bool = kwargs.get("plot_grid", True)
     plot_range = kwargs.get("plot_range", [slice(0, None), slice(1, None)])
+    save: bool = kwargs.get("save", False)
+    name: str  = kwargs.get("name", "")
     
     field = grid.evaluate_on_mesh(fval, res)
     vmax = np.max(np.abs(field))
@@ -46,7 +48,12 @@ def plot(grid: Grid, fval: list, **kwargs) -> None:
                 vx = grid.vertices[[face[i], face[i+1]], 0]
                 vy = grid.vertices[[face[i], face[i+1]], 1]
                 ax.plot(vx, vy, c="w", linewidth=1)
-    plt.show()
+    if save:
+        plt.savefig(name+".png")
+        plt.close()
+    else:
+        plt.show()
+        plt.close()
     
 def plot_error(grid: Grid, fval: list, f_true: callable, **kwargs) -> None:
     xlim: int = kwargs.get("xlim", grid.h[0]*grid.Nx)
@@ -81,6 +88,7 @@ def plot_error(grid: Grid, fval: list, f_true: callable, **kwargs) -> None:
                 vy = grid.vertices[[face[i], face[i+1]], 1]
                 ax.plot(vx, vy, c="w", linewidth=1)
     plt.show()
+    
     
 def plot_stiffness_matrix(A: np.ndarray):
     fig, ax = plt.subplots(1, 2, dpi=250, figsize=(11, 4))

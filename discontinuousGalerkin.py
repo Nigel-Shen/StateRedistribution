@@ -2,7 +2,7 @@ import numpy as np
 from grid import Grid
 from typing import Callable
 
-def initialize(f: Callable, grid: Grid) -> list:
+def initialize(f: Callable, grid: Grid) -> np.ndarray:
     F = np.zeros((len(grid.cells), (grid.P + 1) * (grid.P + 2) // 2))
     for i in range(len(grid.cells)):
         fval = f(grid.quad_nodes[0][i], grid.quad_nodes[1][i])
@@ -18,6 +18,19 @@ def evaluate_at_nodes(F: list, grid: Grid) -> list:
     for i in range(len(grid.cells)):
         fval.append(F[i] @ grid.basis_vols[i].T)
     return fval
+
+def compute_error(grid: Grid, F: np.ndarray, f: Callable) -> float:
+    fval = evaluate_at_nodes(F, grid)
+    L2error = 0
+    Linferror = 0
+    for i in range(len(grid.cells)):
+        fval[i] = fval[i] - f(grid.quad_nodes[0][i], grid.quad_nodes[1][i])
+        L2error += np.sum(fval[i] ** 2 * grid.quad_weights[i])
+        linferror = np.max(np.abs(fval[i]))
+        if linferror > Linferror:
+            Linferror = linferror
+    L2error = np.sqrt(L2error)
+    return L2error, Linferror
 
 def volume_integral(U: np.ndarray, grid: Grid, cell_idx: int, mode: str) -> np.ndarray:
     if mode == "scalar":
@@ -37,8 +50,7 @@ def volume_integral(U: np.ndarray, grid: Grid, cell_idx: int, mode: str) -> np.n
         K               = dbasis_vol @ np.diag(ws) @ basis_vol_db / np.sum(grid.quad_weights[cell_idx])
         return K @ np.concatenate((U[0][cell_idx, :], U[1][cell_idx, :]))
 
-def compute_flux_U(U: np.ndarray, grid: Grid, face_idx: int, flux_type: str, g: Callable, h: Callable, **kwargs) -> np.ndarray:
-    beta = kwargs.get("beta", 0.5)
+def compute_flux_U(U: np.ndarray, grid: Grid, face_idx: int, flux_type: str, g: Callable, h: Callable, beta: np.float64 = 0.5) -> np.ndarray:
     cells_idx = grid.faces_lr[face_idx]
     U_pm = []
     if cells_idx[0] >= 0:
@@ -78,11 +90,16 @@ def compute_flux_U(U: np.ndarray, grid: Grid, face_idx: int, flux_type: str, g: 
     
     return flux_U
 
-def compute_flux_sigma(sigma_x: np.ndarray, sigma_y: np.ndarray, U: np.ndarray, grid: Grid, face_idx: int, flux_type: str, g: Callable, h: Callable, **kwargs) -> np.ndarray:
-    beta    = kwargs.get("beta", 0.5)
-    tau     = kwargs.get("tau", 1) 
-    tau_D   = kwargs.get("tau_D", tau)
+
+def compute_flux_sigma(sigma_x: np.ndarray, sigma_y: np.ndarray, U: np.ndarray, 
+                       grid: Grid, face_idx: int, flux_type: str, g: Callable, h: Callable, 
+                       beta: float = 0.5, tau: float = 1.0, tau_D: float = 1.0) -> np.ndarray:
+    
     cells_idx = grid.faces_lr[face_idx]
+    v_idx = grid.faces[face_idx]
+    h_e = np.linalg.norm(grid.vertices[v_idx[1]] - grid.vertices[v_idx[-1]])
+    tau = tau / h_e
+    tau_D = tau_D / h_e
     sigma_x_pm = []
     sigma_y_pm = []
     U_pm = []
@@ -167,11 +184,10 @@ def surface_integral(flux_U: list, grid: Grid, cell_idx: int, mode: str) -> np.n
             integral += M.T @ np.diag(ws) @ (flux_U[0][face_idx[i]] * normal[:, 0] + flux_U[1][face_idx[i]] * normal[:, 1]) / area
         return integral
  
-def compute_sigma(U: list, grid: Grid, g: Callable, h: Callable, **kwargs) -> tuple:
-    flux_type = kwargs.get("flux_type", "LDG")
-    beta = kwargs.get("beta", 0.5)
+def compute_sigma(U: list, grid: Grid, g: Callable, h: Callable, flux_type: str = "LDG", beta: float = 0.5) -> tuple:
     sigma_x = np.zeros((len(grid.cells), (grid.P + 1) * (grid.P + 2) // 2))
     sigma_y = np.zeros((len(grid.cells), (grid.P + 1) * (grid.P + 2) // 2))
+    
     flux_U = []
     for face_idx in range(len(grid.faces)):
         flux_U.append(compute_flux_U(U, grid, face_idx, flux_type, g, h, beta=beta))
@@ -186,13 +202,8 @@ def compute_sigma(U: list, grid: Grid, g: Callable, h: Callable, **kwargs) -> tu
     
     return sigma_x, sigma_y
 
-def compute_F(U: np.ndarray, sigma_x: np.ndarray, sigma_y: np.ndarray, grid: Grid, g: Callable, h: Callable, **kwargs) -> np.ndarray:
-    flux_type = kwargs.get("flux_type", "LDG")
-    beta = kwargs.get("beta", 0.5)
-    tau = kwargs.get("tau", 1)
-    tau_D = kwargs.get("tau_D", tau)
-    Ugrad_x = kwargs.get("Ugrad_x", None)
-    Ugrad_y = kwargs.get("Ugrad_y", None)
+def compute_F(U: np.ndarray, sigma_x: np.ndarray, sigma_y: np.ndarray, grid: Grid, g: Callable, h: Callable, 
+              flux_type: str = "LDG", beta: float = 0.5, tau: float = 1.0, tau_D: float = 1.0, Ugrad_x=None, Ugrad_y=None) -> np.ndarray:
     
     F = np.zeros((len(grid.cells), (grid.P + 1) * (grid.P + 2) // 2))
     flux_sigma = [[], []]

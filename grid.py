@@ -1,17 +1,20 @@
 import numpy as np
+from numba import jit, njit
+from numba.typed import List
 from typing import Callable
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 from copy import copy
 from scipy.sparse import csr_matrix
-from vandermonde import get_lagrange_legendre, get_legendre_vandermonde
+from vandermonde_t import get_lagrange_legendre, get_legendre_vandermonde
+
 
 def read_file(filename: str, skip_header: bool = True) -> list:
     file1 = open(filename, "r")
     Lines = file1.readlines()
 
     if skip_header:
-        Lines = Lines[1:]
+        Lines = Lines[1:] # skip the first line if it is a header
 
     lines = []
     for line in Lines:
@@ -19,12 +22,12 @@ def read_file(filename: str, skip_header: bool = True) -> list:
     return lines
 
 class Grid:
-    def __init__(self, filename: str, P: int) -> None:
-        self.cells: list = read_file(filename + "_c.txt")
-        self.Nc = len(self.cells)
-        self.vertices: np.ndarray = np.array(read_file(filename + "_v.txt"))
-        self.faces: list = read_file(filename + "_f.txt")
-        self.faces_lr: list = read_file(filename + "_flr.txt")
+    def __init__(self, filename: str, P: int, **kwargs) -> None:
+        self.cells: list = read_file(filename + "_c.txt") # face indices of each cell
+        self.Nc = len(self.cells) 
+        self.vertices: np.ndarray = np.array(read_file(filename + "_v.txt")) # coordinates of vertices
+        self.faces: list = read_file(filename + "_f.txt") # vertex indices of each face
+        self.faces_lr: list = read_file(filename + "_flr.txt") # cells indices of each face, -1 -> Dirichlet BC, -2 -> Neumann BC
         self.cut_flag: list = [i[0] for i in self.cells]
 
         quad = read_file(filename + "_q.txt", skip_header=False)
@@ -34,21 +37,25 @@ class Grid:
         self.quad_weights: list = quad_weights
         self.P: int = P
 
-        sample_cell_idx: int = self.cut_flag.index(0)
-        fidx: list = self.cells[sample_cell_idx][1:]
-        vidx: list = []
-        for idx in fidx:
-            vidx += self.faces[idx][1:]
-        vidx = list(set(vidx))
-        sample_xc = self.vertices[vidx, :]
+        h = kwargs.get("hxy", None)
+        if h == None:
+            sample_cell_idx: int = self.cut_flag.index(0)
+            fidx: list = self.cells[sample_cell_idx][1:]
+            vidx: list = []
+            for idx in fidx:
+                vidx += self.faces[idx][1:]
+            vidx = list(set(vidx))
+            sample_xc = self.vertices[vidx, :]
 
-        x_max, x_min, y_max, y_min = (
-            np.max(sample_xc[:, 0]),
-            np.min(sample_xc[:, 0]),
-            np.max(sample_xc[:, 1]),
-            np.min(sample_xc[:, 1]),
-        )
-        self.h = np.array([x_max - x_min, y_max - y_min])
+            x_max, x_min, y_max, y_min = (
+                np.max(sample_xc[:, 0]),
+                np.min(sample_xc[:, 0]),
+                np.max(sample_xc[:, 1]),
+                np.min(sample_xc[:, 1]),
+            )
+            self.h = np.array([x_max - x_min, y_max - y_min])
+        else:
+            self.h = h
 
     def get_vertices(self, cell_idx: int) -> tuple:
         face_idx = self.cells[cell_idx][1:]
@@ -152,6 +159,7 @@ class Grid:
             
     def preprocess(self, **kwargs) -> None:
         threshold = kwargs.get("threshold", 1)
+        mode = kwargs.get("mode", "elliptic")
         self.threshold = threshold
     
         merged_ind: list = []
@@ -169,9 +177,10 @@ class Grid:
                 volume = np.sum(self.quad_weights[i])
                 for face_idx in self.cells[i][1:]:
                     perimeter += np.sum(np.sqrt(np.sum(self.normals[face_idx] ** 2, axis=1)) * self.quad_weights_surf[face_idx])
-                alpha = 16 * volume / perimeter ** 2
-                
-                # alpha = volume / (self.h[0] * self.h[1])
+                if mode == "elliptic":
+                    alpha = 16 * volume / perimeter ** 2
+                elif mode == "parabolic":
+                    alpha = volume / (self.h[0] * self.h[1])
                 
             self.alphas.append(alpha)
         
@@ -222,24 +231,24 @@ class Grid:
         self.overlap = overlap
         self.weight = csr_matrix((self.Nc, len(self.merged_ind)))
 
-        # for i in range(self.Nc):
-        #     if self.alphas[i] <= threshold:
-        #         self.weight[i, i] = np.min([1, self.alphas[i]]) # np.sum(self.quad_weights[i]) / (self.h[0] * self.h[1])
-        #     else:
-        #         self.weight[i, i] = 1 / len(self.overlap[i])
-        #     for j in self.overlap[i]:
-        #         if i != j:
-        #             self.weight[i, j] = (1 - self.weight[i, i]) / (
-        #                 len(self.overlap[i]) - 1
-        #             )
-        
         for i in range(self.Nc):
+            if self.alphas[i] <= threshold:
+                self.weight[i, i] = np.min([1, self.alphas[i]]) # np.sum(self.quad_weights[i]) / (self.h[0] * self.h[1])
+            else:
+                self.weight[i, i] = 1 / len(self.overlap[i])
             for j in self.overlap[i]:
                 if i != j:
-                    self.weight[i, j] = (1 - self.alphas[merged_ind[j][0]] / (threshold)) / (
+                    self.weight[i, j] = (1 - self.weight[i, i]) / (
                         len(self.overlap[i]) - 1
                     )
-            self.weight[i, i] = 1 - np.sum(self.weight[i, :])
+        
+        # for i in range(self.Nc):
+        #     for j in self.overlap[i]:
+        #         if i != j:
+        #             self.weight[i, j] = (1 - self.alphas[merged_ind[j][0]] / (threshold)) / (
+        #                 len(self.overlap[i]) - 1
+        #             )
+        #     self.weight[i, i] = 1 - np.sum(self.weight[i, :])
                     
     def find_merged_basis(self, **kwargs) -> None:
         

@@ -39,3 +39,25 @@ def get_legendre_vandermonde(xs, ys, P: int, **kwargs) -> tuple | np.ndarray:
         return V, dxV, dyV
     else:
         return V
+
+if __name__=="__main__":
+    import time
+    from functools import wraps
+
+    def timing_decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.perf_counter()  # High-resolution timer
+            result = func(*args, **kwargs)
+            end_time = time.perf_counter()
+            elapsed_time = end_time - start_time
+            print(f"Function '{func.__name__}' executed in {elapsed_time:.6f} seconds.")
+            return result
+        return wrapper
+    get_lagrange_legendre(5, 10)
+    
+    start = time.time()
+    get_lagrange_legendre(400, 400)
+    end = time.time()
+    print(end-start)
+    
